@@ -7,7 +7,7 @@ import serial.tools.list_ports
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QComboBox, QMessageBox, QFileDialog,
-    QGridLayout, QGroupBox, QSplitter, QTextEdit
+    QGridLayout, QGroupBox, QSplitter, QTextEdit, QTabWidget
 )
 from PyQt5.QtCore import QTimer, Qt, pyqtSignal, QObject
 from PyQt5.QtChart import QChart, QChartView, QLineSeries, QValueAxis
@@ -154,6 +154,129 @@ class DataDisplayWidget(QWidget):
         self.az_label.setText(f"{data['az']:.2f}")
 
 
+class HorizonWidget(QWidget):
+    """Простой искусственный горизонт в круглой рамке.
+    Использует roll (крен) и pitch (тангаж) в градусах.
+    """
+    def __init__(self):
+        super().__init__()
+        self.roll_deg = 0.0
+        self.pitch_deg = 0.0
+        self.setMinimumSize(300, 300)
+
+    def set_attitude(self, roll_deg, pitch_deg):
+        self.roll_deg = roll_deg
+        self.pitch_deg = max(min(pitch_deg, 45.0), -45.0)  # ограничим тангаж
+        self.update()
+
+    def paintEvent(self, event):
+        from PyQt5.QtGui import QPainter, QBrush, QPainterPath
+        from PyQt5.QtCore import QRectF
+        size = min(self.width(), self.height())
+        cx = self.width() // 2
+        cy = self.height() // 2
+        radius = size // 2 - 6
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # Фон
+        painter.fillRect(self.rect(), QColor('#000'))
+
+        # Внешняя круглая рамка
+        painter.setPen(QPen(QColor('#E0E0E0'), 3))
+        painter.setBrush(QBrush(QColor('#111')))
+        outer = QRectF(cx - radius, cy - radius, radius * 2, radius * 2)
+        painter.drawEllipse(outer)
+
+        # Внутренняя "окошко" с закруглениями
+        inner_margin = radius * 0.18
+        inner_rect = QRectF(cx - radius + inner_margin,
+                            cy - radius + inner_margin,
+                            (radius - inner_margin) * 2,
+                            (radius - inner_margin) * 2)
+
+        clip_path = QPainterPath()
+        clip_path.addRoundedRect(inner_rect, 28, 28)
+        painter.save()
+        painter.setClipPath(clip_path)
+
+        # Система горизонта (вращаем по крену)
+        painter.translate(inner_rect.center())
+        painter.rotate(self.roll_deg)
+
+        pitch_px_per_deg = inner_rect.height() / 2.0 / 35.0
+        pitch_offset = self.pitch_deg * pitch_px_per_deg
+
+        # Небо
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(QColor('#2F9DED')))
+        painter.drawRect(-1000, -1000 - pitch_offset, 2000, 1000)
+
+        # Земля
+        painter.setBrush(QBrush(QColor('#88552C')))
+        painter.drawRect(-1000, -pitch_offset, 2000, 1000)
+
+        # Линия горизонта
+        painter.setPen(QPen(QColor('white'), 3))
+        painter.drawLine(-1200, -pitch_offset, 1200, -pitch_offset)
+
+        # Разметка тангажа (каждые 10°)
+        painter.setPen(QPen(QColor('white'), 2))
+        for deg in range(-30, 31, 10):
+            y = -(deg * pitch_px_per_deg) - pitch_offset
+            # короткие штрихи по краям
+            painter.drawLine(-130, y, -40, y)
+            painter.drawLine(40, y, 130, y)
+            if deg != 0:
+                # подписи
+                painter.setPen(QPen(QColor('white')))
+                self._draw_text(painter, -140, y - 2, f"{abs(deg)}")
+                self._draw_text(painter, 115, y - 2, f"{abs(deg)}")
+                painter.setPen(QPen(QColor('white'), 2))
+
+        painter.restore()
+
+        # Фиксированный самолётик в центре
+        painter.setPen(QPen(QColor('white'), 3))
+        painter.drawLine(cx - 60, cy, cx - 15, cy)
+        painter.drawLine(cx + 15, cy, cx + 60, cy)
+        painter.drawLine(cx - 15, cy, cx - 5, cy + 6)
+        painter.drawLine(cx + 5, cy + 6, cx + 15, cy)
+        painter.setPen(QPen(QColor('white'), 2))
+        painter.drawEllipse(QRectF(cx - 6, cy - 6, 12, 12))
+
+        # Верхняя шкала крена (дуга)
+        painter.setPen(QPen(QColor('white'), 2))
+        arc_radius = radius - 8
+        for mark, length in [(0, 16), (10, 10), (20, 10), (30, 14), (45, 10), (60, 10)]:
+            for sign in (-1, 1):
+                ang = -90 + sign * mark
+                a = np.radians(ang)
+                sx = cx + arc_radius * np.cos(a)
+                sy = cy + arc_radius * np.sin(a)
+                ex = cx + (arc_radius - length) * np.cos(a)
+                ey = cy + (arc_radius - length) * np.sin(a)
+                painter.drawLine(int(sx), int(sy), int(ex), int(ey))
+
+        # Треугольный указатель крена сверху
+        painter.setBrush(QBrush(QColor('white')))
+        pointer_y = cy - arc_radius - 4
+        path = QPainterPath()
+        path.moveTo(cx, pointer_y)
+        path.lineTo(cx - 10, pointer_y + 16)
+        path.lineTo(cx + 10, pointer_y + 16)
+        path.closeSubpath()
+        painter.drawPath(path)
+
+        painter.end()
+
+    def _draw_text(self, painter, x, y, text):
+        from PyQt5.QtGui import QFontMetrics
+        fm = QFontMetrics(painter.font())
+        w = fm.width(text)
+        painter.drawText(int(x - w/2), int(y), text)
+
 class RIM1AMonitorApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -215,33 +338,38 @@ class RIM1AMonitorApp(QMainWindow):
 
         main_layout.addLayout(control_layout)
 
-        # Основной контент - разделитель
+        # Вкладки
+        tabs = QTabWidget()
+
+        # Вкладка 1 — Данные и графики
+        tab1 = QWidget()
+        t1_layout = QVBoxLayout(tab1)
         splitter = QSplitter(Qt.Horizontal)
-        
-        # Левая панель - отображение данных
+        # Левая панель — значения
         self.data_display = DataDisplayWidget()
         splitter.addWidget(self.data_display)
-        
-        # Правая панель - графики
+        # Правая панель — графики
         charts_widget = QWidget()
         charts_layout = QVBoxLayout(charts_widget)
-        
-        # Графики
         self.chart_gyro = self.create_chart("Гироскоп (°/с)")
         self.chart_acc = self.create_chart("Акселерометр (м/с²)")
-
         self.chart_view_gyro = QChartView(self.chart_gyro)
         self.chart_view_acc = QChartView(self.chart_acc)
-
         charts_layout.addWidget(self.chart_view_gyro)
         charts_layout.addWidget(self.chart_view_acc)
-        
         splitter.addWidget(charts_widget)
-        
-        # Настройка пропорций разделителя
         splitter.setSizes([300, 900])
-        
-        main_layout.addWidget(splitter)
+        t1_layout.addWidget(splitter)
+        tabs.addTab(tab1, "Данные")
+
+        # Вкладка 2 — Искусственный горизонт
+        tab2 = QWidget()
+        t2_layout = QVBoxLayout(tab2)
+        self.horizon = HorizonWidget()
+        t2_layout.addWidget(self.horizon)
+        tabs.addTab(tab2, "Горизонт")
+
+        main_layout.addWidget(tabs)
 
         # Таймер для обновления
         self.timer = QTimer()
@@ -339,6 +467,11 @@ class RIM1AMonitorApp(QMainWindow):
         # Добавляем данные в буферы
         self.append_data(data)
 
+        # Обновляем горизонт (оценка roll/pitch)
+        roll_deg, pitch_deg = self.estimate_attitude(data)
+        if hasattr(self, 'horizon'):
+            self.horizon.set_attitude(roll_deg, pitch_deg)
+
     def append_data(self, data):
         # Добавляем данные
         self.gx_data.append(data['gx'])
@@ -399,6 +532,44 @@ class RIM1AMonitorApp(QMainWindow):
             max_val = max(max(self.ax_data), max(self.ay_data), max(self.az_data))
             margin = (max_val - min_val) * 0.1
             self.chart_acc.axisY().setRange(min_val - margin, max_val + margin)
+
+    def estimate_attitude(self, data):
+        """Простой комплементарный фильтр для оценки roll/pitch.
+        Вход: последние gx, gy (°/с), ax, ay, az (м/с^2)
+        Выход: (roll_deg, pitch_deg)
+        """
+        # Инициализация хранилища углов
+        if not hasattr(self, '_att_roll_deg'):
+            self._att_roll_deg = 0.0
+            self._att_pitch_deg = 0.0
+            self._last_ts = time.time()
+
+        # Интервал времени
+        now = time.time()
+        dt = max(min(now - self._last_ts, 0.1), 1e-3)
+        self._last_ts = now
+
+        gx = float(data['gx'])  # deg/s
+        gy = float(data['gy'])  # deg/s
+        ax = float(data['ax'])
+        ay = float(data['ay'])
+        az = float(data['az'])
+
+        # Оценка из акселерометра (в градусах)
+        # roll_acc: atan2(ay, az), pitch_acc: atan2(-ax, sqrt(ay^2+az^2))
+        from math import atan2, sqrt, degrees
+        roll_acc = degrees(atan2(ay, az)) if (abs(az) + abs(ay)) > 1e-6 else 0.0
+        pitch_acc = degrees(atan2(-ax, sqrt(ay*ay + az*az)))
+
+        # Интегрирование гироскопа
+        roll_gyro = self._att_roll_deg + gx * dt
+        pitch_gyro = self._att_pitch_deg + gy * dt
+
+        alpha = 0.98
+        self._att_roll_deg = alpha * roll_gyro + (1 - alpha) * roll_acc
+        self._att_pitch_deg = alpha * pitch_gyro + (1 - alpha) * pitch_acc
+
+        return self._att_roll_deg, self._att_pitch_deg
 
     def start_reading(self):
         port = self.port_combo.currentText()
